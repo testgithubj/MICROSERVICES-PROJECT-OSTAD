@@ -1,6 +1,15 @@
 name: urlshortner-microservices
 
 services:
+  redis:
+    image: redis:8-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+
   go-service:
     build: ./go-service
     container_name: go-service
@@ -10,6 +19,9 @@ services:
       - go-data:/app
     environment:
       - PYTHON_SERVICE_URL=http://python-service:5000
+      - REDIS_URL=redis:6379
+    depends_on:
+      - redis
 
   node-service:
     build: ./node-service
@@ -29,11 +41,14 @@ services:
     environment:
       - GO_SERVICE_URL=http://go-service:8000
       - NODE_SERVICE_URL=http://node-service:3000
+      - REDIS_URL=redis:6379
     depends_on:
+      - redis
       - go-service
       - node-service
 
 volumes:
+  redis-data:
   go-data:
   node-data:
   python-data:

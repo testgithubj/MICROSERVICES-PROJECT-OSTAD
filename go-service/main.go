@@ -1,24 +1,27 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
-	"bytes"
-	"encoding/json"
-
 	"github.com/gin-gonic/gin"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/redis/go-redis/v9"
 )
 
 var db *sql.DB
+var rdb *redis.Client
+var ctx = context.Background()
 
-// pythonServiceURL can be overridden by PYTHON_SERVICE_URL environment variable
+// pythonServiceURL can be overridden by PYTHON_SERVICE_URL environment variable (kept for backward compatibility)
 var pythonServiceURL = getEnv("PYTHON_SERVICE_URL", "http://localhost:5000")
 
 type ShortenRequest struct {
@@ -56,6 +59,25 @@ func initDB() {
 	}
 
 	log.Println("Database initialized successfully")
+}
+
+func initRedis() {
+	redisURL := getEnv("REDIS_URL", "localhost:6380")
+	
+	rdb = redis.NewClient(&redis.Options{
+		Addr:     redisURL,
+		Password: "", // no password
+		DB:       0,  // default DB
+	})
+
+	// Test connection
+	_, err := rdb.Ping(ctx).Result()
+	if err != nil {
+		log.Printf("Warning: Redis connection failed: %v. Events will not be published.", err)
+		rdb = nil
+	} else {
+		log.Printf("Redis connected successfully at %s", redisURL)
+	}
 }
 
 func getEnv(key, fallback string) string {
@@ -115,8 +137,22 @@ func createShortURL(c *gin.Context) {
 
 func redirect(c *gin.Context) {
 	shortCode := c.Param("code")
-
 	var longURL string
+
+	// Try Redis cache first (if available)
+	if rdb != nil {
+		cachedURL, err := rdb.Get(ctx, "url:"+shortCode).Result()
+		if err == nil {
+			log.Printf("Cache hit for %s", shortCode)
+			longURL = cachedURL
+			// Publish click event to Redis
+			go publishClickEvent(shortCode)
+			c.Redirect(http.StatusMovedPermanently, longURL)
+			return
+		}
+	}
+
+	// Cache miss or Redis unavailable - query database
 	err := db.QueryRow("SELECT long_url FROM urls WHERE short_code = ?", shortCode).Scan(&longURL)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -127,14 +163,48 @@ func redirect(c *gin.Context) {
 		return
 	}
 
-	// Send event to Python service asynchronously
-	go sendClickEvent(shortCode)
+	// Cache the URL in Redis (1 hour TTL)
+	if rdb != nil {
+		rdb.Set(ctx, "url:"+shortCode, longURL, 1*time.Hour)
+		log.Printf("Cached URL for %s", shortCode)
+	}
+
+	// Publish click event to Redis (or fallback to HTTP)
+	go publishClickEvent(shortCode)
 
 	// Redirect to the long URL
 	c.Redirect(http.StatusMovedPermanently, longURL)
 }
 
-func sendClickEvent(shortCode string) {
+func publishClickEvent(shortCode string) {
+	event := ClickEvent{
+		ShortCode: shortCode,
+		ClickedAt: time.Now().Format(time.RFC3339),
+	}
+
+	// Try Redis Pub/Sub first
+	if rdb != nil {
+		jsonData, err := json.Marshal(event)
+		if err != nil {
+			log.Printf("Error marshaling event: %v", err)
+			return
+		}
+
+		err = rdb.Publish(ctx, "click_events", jsonData).Err()
+		if err != nil {
+			log.Printf("Redis publish error: %v, falling back to HTTP", err)
+			// Fallback to HTTP if Redis fails
+			sendClickEventHTTP(shortCode)
+		} else {
+			log.Printf("✅ Click event published to Redis: %s", shortCode)
+		}
+	} else {
+		// No Redis available, use HTTP fallback
+		sendClickEventHTTP(shortCode)
+	}
+}
+
+func sendClickEventHTTP(shortCode string) {
 	event := ClickEvent{
 		ShortCode: shortCode,
 		ClickedAt: time.Now().Format(time.RFC3339),
@@ -157,13 +227,18 @@ func sendClickEvent(shortCode string) {
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("Python service returned status: %d", resp.StatusCode)
 	} else {
-		log.Printf("Click event sent for short code: %s", shortCode)
+		log.Printf("Click event sent via HTTP for: %s", shortCode)
 	}
 }
 
 func main() {
 	initDB()
 	defer db.Close()
+
+	initRedis()
+	if rdb != nil {
+		defer rdb.Close()
+	}
 
 	r := gin.Default()
 

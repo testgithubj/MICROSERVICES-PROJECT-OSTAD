@@ -4,6 +4,9 @@ import requests
 from datetime import datetime, timedelta
 import logging
 import os
+import redis
+import json
+import threading
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -11,7 +14,86 @@ logging.basicConfig(level=logging.INFO)
 # Use environment variables for Docker, fallback to localhost for local dev
 GO_SERVICE_URL = os.getenv("GO_SERVICE_URL", "http://localhost:8000")
 NODE_SERVICE_URL = os.getenv("NODE_SERVICE_URL", "http://localhost:3000")
+REDIS_URL = os.getenv("REDIS_URL", "localhost:6380")
 DATABASE = "python.db"
+
+# Initialize Redis client
+redis_client = None
+
+
+def init_redis():
+    """Initialize Redis connection"""
+    global redis_client
+    try:
+        # Parse host and port
+        host_port = REDIS_URL.split(":")
+        host = host_port[0]
+        port = int(host_port[1]) if len(host_port) > 1 else 6379
+
+        redis_client = redis.Redis(host=host, port=port, decode_responses=True)
+        redis_client.ping()
+        logging.info(f"✅ Redis connected successfully at {REDIS_URL}")
+
+        # Start Redis subscriber in background thread
+        subscriber_thread = threading.Thread(target=redis_subscriber, daemon=True)
+        subscriber_thread.start()
+        logging.info("Redis subscriber thread started")
+
+    except Exception as e:
+        logging.warning(f"Redis connection failed: {e}. Will use HTTP endpoint only.")
+        redis_client = None
+
+
+def redis_subscriber():
+    """Subscribe to Redis click_events channel"""
+    try:
+        pubsub = redis_client.pubsub()
+        pubsub.subscribe("click_events")
+        logging.info("📡 Subscribed to 'click_events' channel")
+
+        for message in pubsub.listen():
+            if message["type"] == "message":
+                try:
+                    event_data = json.loads(message["data"])
+                    process_click_event(event_data)
+                except Exception as e:
+                    logging.error(f"Error processing Redis event: {e}")
+    except Exception as e:
+        logging.error(f"Redis subscriber error: {e}")
+
+
+def process_click_event(data):
+    """Process click event from Redis or HTTP"""
+    short_code = data.get("short_code")
+    clicked_at = data.get("clicked_at", datetime.now().isoformat())
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Store click event
+    cursor.execute(
+        """
+        INSERT INTO click_events (short_code, clicked_at)
+        VALUES (?, ?)
+    """,
+        (short_code, clicked_at),
+    )
+
+    # Update metadata
+    cursor.execute(
+        """
+        UPDATE url_metadata
+        SET total_clicks = total_clicks + 1,
+            last_clicked = ?
+        WHERE short_code = ?
+    """,
+        (clicked_at, short_code),
+    )
+
+    conn.commit()
+    conn.close()
+
+    logging.info(f"📊 Processed click event for: {short_code}")
 
 
 def init_db():
@@ -150,42 +232,15 @@ def create_short_url():
 
 @app.route("/api/events", methods=["POST"])
 def receive_event():
-    """Receive click events from Go service"""
+    """Receive click events from Go service (HTTP fallback)"""
     data = request.get_json()
 
     if not data or "short_code" not in data:
         return jsonify({"error": "Invalid event data"}), 400
 
-    short_code = data["short_code"]
-    clicked_at = data.get("clicked_at", datetime.now().isoformat())
+    # Process using the same function as Redis subscriber
+    process_click_event(data)
 
-    conn = get_db()
-    cursor = conn.cursor()
-
-    # Store click event
-    cursor.execute(
-        """
-        INSERT INTO click_events (short_code, clicked_at)
-        VALUES (?, ?)
-    """,
-        (short_code, clicked_at),
-    )
-
-    # Update metadata
-    cursor.execute(
-        """
-        UPDATE url_metadata
-        SET total_clicks = total_clicks + 1,
-            last_clicked = ?
-        WHERE short_code = ?
-    """,
-        (clicked_at, short_code),
-    )
-
-    conn.commit()
-    conn.close()
-
-    logging.info(f"Recorded click event for: {short_code}")
     return jsonify({"status": "success"}), 200
 
 
@@ -269,4 +324,5 @@ def get_stats():
 
 if __name__ == "__main__":
     init_db()
+    init_redis()
     app.run(host="0.0.0.0", port=5000, debug=True)

@@ -1,6 +1,6 @@
 # URL Shortener - Microservice Architecture Demo
 
-A microservice-based URL shortener demonstrating proper service separation with three independent services: Go for high-performance redirects, Python for analytics and dashboard, and Node.js for URL metadata enrichment.
+A production-ready microservice-based URL shortener demonstrating proper service separation with four independent services: Go for high-performance redirects, Python for analytics and dashboard, Node.js for URL metadata enrichment, and Redis for event-driven communication and caching.
 
 ## Architecture
 
@@ -25,10 +25,12 @@ This project demonstrates a realistic microservice architecture where different 
 - **Responsibilities**:
   - Provide web dashboard for URL creation
   - Orchestrate URL creation (call Go) and metadata fetching (call Node.js)
+  - Subscribe to Redis click events channel
   - Collect and aggregate click events
   - Display analytics and statistics with metadata
   - Generate visualizations
-- **Technology**: Python with Flask
+  - HTTP fallback endpoint for events
+- **Technology**: Python with Flask, redis-py
 
 **Node.js Service (Port 3000)**
 
@@ -42,45 +44,67 @@ This project demonstrates a realistic microservice architecture where different 
 
 ### Microservice Communication
 
+**URL Creation (Synchronous):**
+
 ```
 User → Python Dashboard
          ↓
-         ├→ Go Service (Port 8000) → Create Short URL → go.db
-         └→ Node.js Service (Port 3000) → Fetch Metadata → node.db
+         ├→ Go Service → Create Short URL → go.db
+         └→ Node.js Service → Fetch Metadata → node.db
          ↓
     Display URL + Metadata in UI
-
-User clicks Short URL → Go Service (Port 8000)
-                         ↓
-                    Redirect User
-                         ↓
-               Async Event → Python Service (Port 5000) → python.db
 ```
 
-- **Python → Go**: HTTP POST to create URLs
-- **Python → Node.js**: HTTP POST to fetch metadata
-- **Go → Python**: Async HTTP POST for click events (fire-and-forget)
+**Click Events (Event-Driven with Redis):**
+
+```
+User clicks → Go Service
+                ↓
+            1. Check Redis cache
+               ├─ Hit: Instant redirect ⚡
+               └─ Miss: Query DB → Cache in Redis
+                ↓
+            2. Publish to Redis "click_events"
+                ↓
+            Redis Pub/Sub
+                ↓
+            Python subscribes → Process event → python.db
+```
+
+**Communication Patterns:**
+
+- **Python → Go**: HTTP POST (URL creation - needs immediate response)
+- **Python → Node.js**: HTTP POST (metadata fetch - synchronous)
+- **Go → Redis**: Pub/Sub publish (click events - decoupled)
+- **Redis → Python**: Pub/Sub subscribe (click events - async processing)
+- **Go → Redis**: Cache (URL lookups - performance)
+- **Fallback**: HTTP POST if Redis unavailable
 - **No direct database sharing**: Each service owns its data
 
 ## Features
 
 - ✅ Create short URLs through web dashboard
-- ✅ Fast redirects handled by Go
-- ✅ **URL metadata enrichment via Node.js (titles, descriptions, favicons)**
+- ✅ **Lightning-fast redirects with Redis caching** ⚡
+- ✅ **Event-driven architecture with Redis Pub/Sub**
+- ✅ **Never lose events** - Redis queues them if Python is down
+- ✅ URL metadata enrichment via Node.js (titles, descriptions, favicons)
 - ✅ Real-time analytics dashboard
 - ✅ Click tracking and history
 - ✅ Visual charts for click patterns
 - ✅ Top URLs by popularity with page info
 - ✅ Recent activity monitoring
 - ✅ Auto-refreshing dashboard (every 5 seconds)
-- ✅ **Visual indicators showing Node.js service status**
+- ✅ Visual indicators showing Node.js service status
+- ✅ **Graceful degradation** - HTTP fallback if Redis unavailable
 
 ## Prerequisites
 
-- **Go**: Version 1.21 or higher
+- **Go**: Version 1.24 or higher
 - **Python**: Version 3.14 (or 3.8+)
-- **Node.js**: Version 16 or higher (with npm)
+- **Node.js**: Version 24.11 or higher (with npm)
+- **Redis**: Version 7 or higher (for local: localhost:6380)
 - **SQLite**: Built-in with Go, Python, and Node.js
+- **Docker & Docker Compose**: For containerized deployment (recommended)
 
 ## Installation & Setup
 
@@ -182,7 +206,15 @@ python app.py
 
 The Python service will start on `http://localhost:5000`
 
-### 4. Setup Node.js Service
+### 4. Setup Redis (Local Development)
+
+```bash
+# User has Redis running at localhost:6380
+# Services will automatically connect to it
+# No additional setup needed!
+```
+
+### 5. Setup Node.js Service
 
 Open a new terminal:
 
@@ -409,15 +441,18 @@ CREATE TABLE metadata (
 ## Microservice Design Principles Demonstrated
 
 1. **Service Independence**: Each service has its own database and can run independently
-2. **Single Responsibility**: Go=Redirects, Python=Analytics/UI, Node.js=Metadata enrichment
-3. **API Communication**: Services communicate via REST APIs, not direct database access
-4. **Service Orchestration**: Python orchestrates calls to both Go and Node.js
-5. **Asynchronous Operations**: Click events are sent asynchronously to avoid slowing redirects
-6. **Graceful Degradation**: System works even if Node.js service is unavailable
-7. **Data Ownership**: Each service owns and manages its own data
-8. **Scalability**: Services can be scaled independently based on load
-9. **Containerization**: Each service runs in isolated Docker containers
-10. **Environment Configuration**: Services use environment variables for Docker/local flexibility
+2. **Single Responsibility**: Go=Redirects, Python=Analytics/UI, Node.js=Metadata, Redis=Messaging
+3. **Event-Driven Architecture**: Redis Pub/Sub for decoupled async communication
+4. **API Communication**: Services communicate via REST APIs for synchronous operations
+5. **Service Orchestration**: Python orchestrates calls to both Go and Node.js
+6. **Message Broker**: Redis as central message bus (industry-standard pattern)
+7. **Caching Strategy**: Redis caching layer for performance optimization
+8. **Graceful Degradation**: System works even if Redis or Node.js unavailable
+9. **Data Ownership**: Each service owns and manages its own data
+10. **Scalability**: Services can be scaled independently, Redis enables horizontal scaling
+11. **Containerization**: Each service runs in isolated Docker containers
+12. **Environment Configuration**: Services use environment variables for Docker/local flexibility
+13. **Resilience**: Events never lost - queued in Redis until processed
 
 ## Testing the System
 
@@ -484,24 +519,24 @@ curl http://localhost:3000/health
 ```
 /home/xaadu/codes/urlshortner/
 ├── README.md
-├── docker-compose.yml    # Docker Compose orchestration
+├── docker-compose.yml    # Docker Compose with 4 services (includes Redis!)
 ├── go-service/
-│   ├── Dockerfile        # Go container definition
+│   ├── Dockerfile        # Go container with CGO for SQLite
 │   ├── .dockerignore     # Docker ignore file
-│   ├── main.go           # Go application (redirects & URL creation)
-│   ├── go.mod            # Go dependencies
+│   ├── main.go           # Go app with Redis pub/sub & caching
+│   ├── go.mod            # Go dependencies (includes go-redis)
 │   ├── go.sum            # Go dependency checksums
 │   └── go.db             # SQLite database (created at runtime)
 ├── python-service/
-│   ├── Dockerfile        # Python container definition
+│   ├── Dockerfile        # Python container
 │   ├── .dockerignore     # Docker ignore file
-│   ├── app.py            # Flask application (analytics & orchestration)
-│   ├── requirements.txt   # Python dependencies
+│   ├── app.py            # Flask app with Redis subscriber
+│   ├── requirements.txt   # Python deps (Flask, requests, redis)
 │   ├── python.db         # SQLite database (created at runtime)
 │   └── templates/
 │       └── dashboard.html # Web dashboard UI with metadata display
 └── node-service/
-    ├── Dockerfile        # Node.js container definition
+    ├── Dockerfile        # Node.js container
     ├── .dockerignore     # Docker ignore file
     ├── server.js         # Express application (metadata fetching)
     ├── package.json      # Node.js dependencies
@@ -525,6 +560,10 @@ curl http://localhost:3000/health
   - Cheerio (HTML parsing)
   - SQLite3 driver
   - Alpine Linux (Docker base)
+- **Redis 7**: Message broker and cache
+  - Pub/Sub for event-driven architecture
+  - Caching layer for performance
+  - Persistence with AOF (Append-Only File)
 - **Docker & Docker Compose**: Containerization and orchestration
 - **SQLite**: Lightweight database for all three services
 - **Chart.js**: Data visualization
@@ -543,7 +582,8 @@ curl http://localhost:3000/health
 
 ## Author
 
-[Zayed](https://zayedabdullah.com) | [Email](mailto:contact@zayedabdullah.com) | [GitHub (xaadu)](https://github.com/xaadu) | [LinkedIn](https://www.linkedin.com/in/abdullahzayed01/)
+[Abdullah Zayed (zayedabdullah.com)](https://zayedabdullah.com)
+Contact: [Email (contact@zayedabdullah.com)](mailto:contact@zayedabdullah.com) | [GitHub (xaadu)](https://github.com/xaadu) | [LinkedIn (abdullahzayed01)](https://www.linkedin.com/in/abdullahzayed01/)
 
 ## Contributing
 
