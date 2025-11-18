@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-service
+  namespace: urlshortner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go-service
+  template:
+    metadata:
+      labels:
+        app: go-service
+    spec:
+      containers:
+        - name: go-service
+          image: shodeitanim/urlshortner-go:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: urlshortner-config
+            - secretRef:
+                name: urlshortner-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-service
+  namespace: urlshortner
+spec:
+  selector:
+    app: go-service
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP

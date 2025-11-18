@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-service
+  namespace: urlshortner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: python-service
+  template:
+    metadata:
+      labels:
+        app: python-service
+    spec:
+      containers:
+        - name: python-service
+          image: shodeitanim/urlshortner-python:latest
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: urlshortner-config
+            - secretRef:
+                name: urlshortner-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-service
+  namespace: urlshortner
+spec:
+  selector:
+    app: python-service
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP
+  type: ClusterIP

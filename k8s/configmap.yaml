@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: urlshortner-config
+  namespace: urlshortner
+data:
+  GO_SERVICE_URL: "http://go-service:8000"
+  NODE_SERVICE_URL: "http://node-service:3000"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
