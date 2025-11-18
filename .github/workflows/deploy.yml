@@ -2,7 +2,8 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   build-and-push:
@@ -21,26 +22,29 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # Go service
       - name: Build and push Go service
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./go-service
           file: ./go-service/Dockerfile
           push: true
           tags: xaadu/urlshortner-go:latest
 
+      # Python service
       - name: Build and push Python service
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./python-service
           file: ./python-service/Dockerfile
           push: true
           tags: xaadu/urlshortner-python:latest
 
+      # Node service
       - name: Build and push Node service
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./node-service
           file: ./node-service/Dockerfile
           push: true
           tags: xaadu/urlshortner-node:latest
