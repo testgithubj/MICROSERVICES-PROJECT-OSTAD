@@ -1,20 +1,20 @@
-FROM python:3.14-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy requirements
-COPY requirements.txt ./
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-# Install dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
-COPY app.py ./
-COPY templates/ ./templates/
+COPY . .
 
-# Expose port
+# Example envs; you’ll override in K8s via ConfigMap/Secret
+ENV REDIS_HOST=redis \
+    REDIS_PORT=6379
+
 EXPOSE 5000
 
-# Run Flask
 CMD ["python", "app.py"]
 

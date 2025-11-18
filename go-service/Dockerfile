@@ -1,25 +1,29 @@
 FROM golang:1.24-alpine
 
+# CGO + sqlite এর জন্য প্যাকেজ
+RUN apk add --no-cache gcc g++ musl-dev sqlite-dev
+
 WORKDIR /app
 
-# Install gcc and build tools for CGO (required by go-sqlite3)
-RUN apk add --no-cache gcc musl-dev sqlite-dev
-
-# Copy go mod files
-COPY go.mod go.sum ./
-
-# Download dependencies
+# আগে শুধু go.mod কপি করে dependency cache নেব
+COPY go.mod ./
 RUN go mod download
 
-# Copy source code
-COPY main.go ./
+# এখন বাকি কোড কপি
+COPY . .
 
-# Build the application with CGO enabled and proper tags for Alpine/musl
-ENV CGO_ENABLED=1
-RUN go build -tags "libsqlite3" -o urlshortener main.go
+# এখানে go.sum/ডিপেন্ডেন্সি সব ঠিক করে নেবে
+RUN go mod tidy
 
-# Expose port
+# 👉 CGO_ENABLED=1 রেখে binary build
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o urlshortner
+
+# runtime ENV
+ENV DB_PATH=/data/go.db \
+    REDIS_HOST=redis \
+    REDIS_PORT=6379
+
+VOLUME ["/data"]
 EXPOSE 8000
 
-# Run the binary
-CMD ["./urlshortener"]
+CMD ["./urlshortner"]
