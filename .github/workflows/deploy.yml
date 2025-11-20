@@ -1,75 +1,89 @@
-name: CI-CD URL Shortner
+name: CI/CD - URL Shortener Microservices
 
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
-  build-and-push:
+  # 1) Build + SonarQube analysis + Docker push
+  build_and_scan:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service: [ "go-service", "node-service", "python-service" ]
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./${{ matrix.service }}
-          file: ./${{ matrix.service }}/Dockerfile
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/urlshortner-${{ matrix.service }}:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/urlshortner-${{ matrix.service }}:${{ github.sha }}
-
-  sonar:
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    steps:
-      - uses: actions/checkout@v4
-
+      # SonarQube স্ক্যান করার জন্য Java দরকার হয়
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
 
       - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io   # যদি SonarCloud ব্যবহার করো
-        run: |
-          mv ci-cd/sonar-project.properties .
-          ./mvnw sonar:sonar \
-            -Dsonar.projectKey=urlshortner-microservices \
-            -Dsonar.login=$SONAR_TOKEN
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build & push Docker images
+        run: |
+          TAG=${GITHUB_SHA::7}
+
+          # Go service
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/urlshortner-go-service:${TAG} ./go-service
+          docker push ${{ secrets.DOCKER_USERNAME }}/urlshortner-go-service:${TAG}
+
+          # Python service
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/urlshortner-python-service:${TAG} ./python-service
+          docker push ${{ secrets.DOCKER_USERNAME }}/urlshortner-python-service:${TAG}
+
+          # Node service
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/urlshortner-node-service:${TAG} ./node-service
+          docker push ${{ secrets.DOCKER_USERNAME }}/urlshortner-node-service:${TAG}
+
+          echo "IMAGE_TAG=${TAG}" >> $GITHUB_ENV
+
+  # 2) Kubernetes deploy (only when push to main, not PR)
   deploy:
+    needs: build_and_scan
     runs-on: ubuntu-latest
-    needs: [ build-and-push, sonar ]
+    if: github.ref == 'refs/heads/main'
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Set up kubectl
-        run: |
-          echo "${{ secrets.KUBECONFIG_DATA }}" | base64 -d > $HOME/.kube/config
-          kubectl config get-contexts
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.30.0"
 
-      - name: Deploy to K8s
+      - name: Configure kubeconfig
         run: |
-          kubectl apply -f k8s/
-          kubectl rollout status deployment/python-service -n urlshortner
-          kubectl rollout status deployment/go-service -n urlshortner
-          kubectl rollout status deployment/node-service -n urlshortner
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 --decode > ~/.kube/config
+
+      - name: Update image tags in manifests (optional)
+        run: |
+          # ধরলাম k8s yaml এর মধ্যে image এ :latest লেখা আছে,
+          # চাইলে sed দিয়ে replace করে দিতে পারো।
+          TAG=${IMAGE_TAG}
+
+          sed -i "s#urlshortner-go-service:latest#${{ secrets.DOCKER_USERNAME }}/urlshortner-go-service:${TAG}#g" k8s/go-deployment.yaml
+          sed -i "s#urlshortner-python-service:latest#${{ secrets.DOCKER_USERNAME }}/urlshortner-python-service:${TAG}#g" k8s/python-deployment.yaml
+          sed -i "s#urlshortner-node-service:latest#${{ secrets.DOCKER_USERNAME }}/urlshortner-node-service:${TAG}#g" k8s/node-deployment.yaml
+
+      - name: Apply Kubernetes manifests
+        run: |
+          # যদি namespace থাকে (যেমন urlshortner), আগে নিশ্চিত হও যে namespace আছে
+          kubectl apply -f k8s/ -n urlshortner
 
