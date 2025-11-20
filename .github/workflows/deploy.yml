@@ -23,17 +23,18 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # SonarCloud Scan
+      # SonarCloud Sc
       - name: SonarCloud Scan
         uses: sonarsource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }} # https://sonarcloud.io
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         with:
           args: >
-            -Dsonar.projectKey=SADMANSANID_MICROSERVICES-PROJECT-OSTAD
+            -Dsonar.projectKey=MICROSERVICES-PROJECT-OSTAD
             -Dsonar.organization=testgithubj
             -Dsonar.sources=.
+
 
       # DockerHub Login
       - name: Login to DockerHub
