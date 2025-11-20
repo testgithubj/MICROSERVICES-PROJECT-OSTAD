@@ -1,0 +1,8 @@
+sonar.projectKey=testgithubj_MICROSERVICES-PROJECT-OSTAD
+sonar.organization=testgithubj
+
+sonar.host.url=https://sonarcloud.io
+
+sonar.sources=.
+sonar.exclusions=**/node_modules/**, **/*.test.js, **/*.spec.js
+sonar.javascript.lcov.reportPaths=coverage/lcov.info
