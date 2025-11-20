@@ -8,7 +8,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # 1) Build + SonarCloud scan + Docker push
+  # 1) Build + SonarCloud analysis + Docker push
   build_and_scan:
     runs-on: ubuntu-latest
 
@@ -16,35 +16,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # SonarCloud এর জন্য Java দরকার
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # SonarCloud স্ক্যান
+      # SonarCloud Scan
       - name: SonarCloud Scan
         uses: sonarsource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }} # https://sonarcloud.io
         with:
           args: >
-            -Dsonar.projectKey=MICROSERVICES-PROJECT-OSTAD
+            -Dsonar.projectKey=SADMANSANID_MICROSERVICES-PROJECT-OSTAD
             -Dsonar.organization=testgithubj
             -Dsonar.sources=.
 
-      # DockerHub login
+      # DockerHub Login
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # সব সার্ভিসের ইমেজ build + push
+      # তিনটা সার্ভিসের ইমেজ build + push
       - name: Build & push Docker images
         run: |
+          # একই commit SHA থেকে tag বানাচ্ছি
           TAG=${GITHUB_SHA::7}
+          echo "Using image tag: ${TAG}"
 
           # Go service
           docker build -t ${{ secrets.DOCKER_USERNAME }}/urlshortner-go-service:${TAG} ./go-service
@@ -58,10 +61,7 @@ jobs:
           docker build -t ${{ secrets.DOCKER_USERNAME }}/urlshortner-node-service:${TAG} ./node-service
           docker push ${{ secrets.DOCKER_USERNAME }}/urlshortner-node-service:${TAG}
 
-          # পরের job এর জন্য tag env এ রেখে দিচ্ছি
-          echo "IMAGE_TAG=${TAG}" >> $GITHUB_ENV
-
-  # 2) Kubernetes deploy (main ব্রাঞ্চে push হলে)
+  # 2) Kubernetes deploy (শুধু main branch এ push হলে)
   deploy:
     needs: build_and_scan
     runs-on: ubuntu-latest
@@ -76,16 +76,22 @@ jobs:
         with:
           version: "v1.30.0"
 
-      # KUBE_CONFIG secret থেকে kubeconfig বানাচ্ছি
       - name: Configure kubeconfig
         run: |
           mkdir -p ~/.kube
+          # KUBE_CONFIG = base64 encoded kubeconfig (এক লাইনে)
           echo "${{ secrets.KUBE_CONFIG }}" | base64 --decode > ~/.kube/config
 
-      # k8s yaml-এ latest এর জায়গায় নতুন TAG বসাচ্ছি
+      - name: Ensure namespace exists
+        run: |
+          kubectl create namespace urlshortner --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Update image tags in manifests
         run: |
-          TAG=${IMAGE_TAG}
+          # same tag = current commit short SHA
+          TAG=${GITHUB_SHA::7}
+          echo "Using image tag: ${TAG} for k8s manifests"
+
           sed -i "s#urlshortner-go-service:latest#${{ secrets.DOCKER_USERNAME }}/urlshortner-go-service:${TAG}#g" k8s/go-deployment.yaml
           sed -i "s#urlshortner-python-service:latest#${{ secrets.DOCKER_USERNAME }}/urlshortner-python-service:${TAG}#g" k8s/python-deployment.yaml
           sed -i "s#urlshortner-node-service:latest#${{ secrets.DOCKER_USERNAME }}/urlshortner-node-service:${TAG}#g" k8s/node-deployment.yaml
@@ -93,3 +99,4 @@ jobs:
       - name: Apply Kubernetes manifests
         run: |
           kubectl apply -f k8s/ -n urlshortner
+
