@@ -25,15 +25,16 @@ jobs:
 
       # SonarCloud Sc
       - name: SonarCloud Scan
-        uses: sonarsource/sonarqube-scan-action@v2
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            -Dsonar.projectKey=MICROSERVICES-PROJECT-OSTAD
-            -Dsonar.organization=testgithubj
-            -Dsonar.sources=.
+  uses: sonarsource/sonarqube-scan-action@v2
+  env:
+    SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+  with:
+    args: >
+      -Dsonar.projectKey=testgithubj_MICROSERVICES-PROJECT-OSTAD
+      -Dsonar.organization=testgithubj
+      -Dsonar.sources=.
+
 
 
       # DockerHub Login
